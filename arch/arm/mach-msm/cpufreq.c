@@ -136,14 +136,12 @@ static int set_cpu_freq(struct cpufreq_policy *policy, unsigned int new_freq,
 
 	trace_cpu_frequency_switch_start(freqs.old, freqs.new, policy->cpu);
 	if (is_clk) {
-		if (cpu_clk[policy->cpu]) {
-			unsigned long rate = new_freq * 1000;
-			rate = clk_round_rate(cpu_clk[policy->cpu], rate);
-			ret = clk_set_rate(cpu_clk[policy->cpu], rate);
-			if (!ret) {
-				freq_index[policy->cpu] = index;
-				update_l2_bw(NULL);
-			}
+		unsigned long rate = new_freq * 1000;
+		rate = clk_round_rate(cpu_clk[policy->cpu], rate);
+		ret = clk_set_rate(cpu_clk[policy->cpu], rate);
+		if (!ret) {
+			freq_index[policy->cpu] = index;
+			update_l2_bw(NULL);
 		}
 	} else {
 		ret = acpuclk_set_rate(policy->cpu, new_freq, SETRATE_CPUFREQ);
@@ -230,12 +228,8 @@ static int msm_cpufreq_verify(struct cpufreq_policy *policy)
 
 static unsigned int msm_cpufreq_get_freq(unsigned int cpu)
 {
-	if (is_clk) {
-		if (cpu_clk[cpu])
-			return clk_get_rate(cpu_clk[cpu]) / 1000;
-		else if (is_sync)
-			return clk_get_rate(cpu_clk[0]) / 1000;
-	}
+	if (is_clk)
+		return clk_get_rate(cpu_clk[cpu]) / 1000;
 
 	return acpuclk_get_rate(cpu);
 }
@@ -279,7 +273,10 @@ static int __cpuinit msm_cpufreq_init(struct cpufreq_policy *policy)
 	policy->max = CONFIG_MSM_CPU_FREQ_MAX;
 #endif
 
-	cur_freq = msm_cpufreq_get_freq(policy->cpu);
+	if (is_clk)
+		cur_freq = clk_get_rate(cpu_clk[policy->cpu])/1000;
+	else
+		cur_freq = acpuclk_get_rate(policy->cpu);
 
 	if (cpufreq_frequency_table_target(policy, table, cur_freq,
 	    CPUFREQ_RELATION_H, &index) &&
@@ -330,14 +327,14 @@ static int __cpuinit msm_cpufreq_cpu_callback(struct notifier_block *nfb,
 	 */
 	case CPU_DEAD:
 	case CPU_UP_CANCELED:
-		if (is_clk && cpu_clk[cpu]) {
+		if (is_clk) {
 			clk_disable_unprepare(cpu_clk[cpu]);
 			clk_disable_unprepare(l2_clk);
 			update_l2_bw(NULL);
 		}
 		break;
 	case CPU_UP_PREPARE:
-		if (is_clk && cpu_clk[cpu]) {
+		if (is_clk) {
 			rc = clk_prepare_enable(l2_clk);
 			if (rc < 0)
 				return NOTIFY_BAD;
