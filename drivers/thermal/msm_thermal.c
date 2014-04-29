@@ -907,7 +907,9 @@ static __ref int do_hotplug(void *data)
 
 	sched_setscheduler(current, SCHED_FIFO, &param);
 	while (!kthread_should_stop()) {
-		wait_for_completion(&hotplug_notify_complete);
+		while (wait_for_completion_interruptible(
+			&hotplug_notify_complete) != 0)
+			;
 		INIT_COMPLETION(hotplug_notify_complete);
 		mask = 0;
 
@@ -1351,7 +1353,9 @@ static __ref int do_freq_mitigation(void *data)
 
 	sched_setscheduler(current, SCHED_FIFO, &param);
 	while (!kthread_should_stop()) {
-		wait_for_completion(&freq_mitigation_complete);
+		while (wait_for_completion_interruptible(
+			&freq_mitigation_complete) != 0)
+			;
 		INIT_COMPLETION(freq_mitigation_complete);
 
 		get_online_cpus();
