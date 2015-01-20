@@ -3170,4 +3170,9 @@ config PM_DEBUG_WAKEUP
     default n
     bool "Report wakeup source in a uevent"
 
+config MSM_SLEEPER
+	bool "CPU hotplug driver"
+	default y
+	help
+	  CPU hotplug driver
 endif
