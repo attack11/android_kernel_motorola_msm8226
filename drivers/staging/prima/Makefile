@@ -628,7 +628,7 @@ CDEFINES += -DEXISTS_MSM_SMD
 CDEFINES += -DEXISTS_MSM_SMSM
 
 # Fix build for GCC 4.7
-EXTRA_CFLAGS += -Wno-maybe-uninitialized -Wno-unused-function -Wno-unused-variable
+EXTRA_CFLAGS += -Wno-unused-function -Wno-unused-variable
 
 KBUILD_CPPFLAGS += $(CDEFINES)
 
