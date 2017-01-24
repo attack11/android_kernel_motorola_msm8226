@@ -24,10 +24,8 @@
 #include <linux/kthread.h>
 #include <linux/kernel_stat.h>
 #include <linux/tick.h>
+#include "../cpuquiet.h"
 
-// from cpuquiet_driver.c
-extern unsigned int cpq_max_cpus(void);
-extern unsigned int cpq_min_cpus(void);
 extern bool cpq_is_suspended(void);
 
 typedef enum {
