@@ -45,8 +45,63 @@ static struct workqueue_struct *cpu_boost_wq;
 
 static struct work_struct input_boost_work;
 
+static int cpu_boost_enable(void);
+static int cpu_boost_disable(void);
+
 static unsigned int boost_ms;
-module_param(boost_ms, uint, 0644);
+static unsigned int input_boost_ms;
+
+/* Module parameter ops */
+static int boost_ms_set(const char *val, const struct kernel_param *kp)
+{
+	int ret;
+	unsigned int boost_ms_val;
+
+	ret = kstrtouint(val, 10, &boost_ms_val);
+	if (ret < 0)
+		return -EINVAL;
+
+	boost_ms = boost_ms_val;
+
+	if (boost_ms || input_boost_ms)
+		cpu_boost_enable();
+	else
+		cpu_boost_disable();
+
+	return ret;
+}
+
+static int input_boost_ms_set(const char *val, const struct kernel_param *kp)
+{
+	int ret;
+	unsigned int input_boost_ms_val;
+
+	ret = kstrtouint(val, 10, &input_boost_ms_val);
+	if (ret < 0)
+		return -EINVAL;
+
+	input_boost_ms = input_boost_ms_val;
+
+	if (boost_ms || input_boost_ms)
+		cpu_boost_enable();
+	else
+		cpu_boost_disable();
+
+	return ret;
+}
+
+static struct kernel_param_ops boost_ms_ops = {
+	.set = boost_ms_set,
+	.get = param_get_int,
+};
+
+static struct kernel_param_ops input_boost_ms_ops = {
+	.set = input_boost_ms_set,
+	.get = param_get_int,
+};
+
+
+module_param_cb(boost_ms, &boost_ms_ops, &boost_ms, 0644);
 
 static unsigned int sync_threshold;
 module_param(sync_threshold, uint, 0644);
@@ -54,11 +109,12 @@ module_param(sync_threshold, uint, 0644);
 static unsigned int input_boost_freq;
 module_param(input_boost_freq, uint, 0644);
 
-static unsigned int input_boost_ms = 40;
-module_param(input_boost_ms, uint, 0644);
+module_param_cb(input_boost_ms, &input_boost_ms_ops, &input_boost_ms, 0644);
 
 static u64 last_input_time;
 #define MIN_INPUT_INTERVAL (150 * USEC_PER_MSEC)
+
+static bool enabled = false;
 
 /*
  * The CPUFREQ_ADJUST notifier is used to override the current policy min to
@@ -141,14 +197,11 @@ static int boost_mig_sync_thread(void *data)
 	unsigned long flags;
 
 	while(1) {
-		ret = wait_event_interruptible(s->sync_wq, s->pending ||
+		wait_event_interruptible(s->sync_wq, s->pending ||
 					kthread_should_stop());
 
 		if (kthread_should_stop())
 			break;
-
-		if (ret == -ERESTARTSYS)
-			continue;
 
 		spin_lock_irqsave(&s->lock, flags);
 		s->pending = false;
@@ -163,14 +216,11 @@ static int boost_mig_sync_thread(void *data)
 		if (ret)
 			continue;
 
-		if (dest_policy.cur >= src_policy.cur ) {
-			pr_debug("No sync. CPU%d@%dKHz >= CPU%d@%dKHz\n",
-				 dest_cpu, dest_policy.cur, src_cpu, src_policy.cur);
+		if (src_policy.cur == src_policy.cpuinfo.min_freq) {
+			pr_debug("No sync. Source CPU%d@%dKHz at min freq\n",
+				 src_cpu, src_policy.cur);
 			continue;
 		}
-
-		if (sync_threshold && (dest_policy.cur >= sync_threshold))
-			continue;
 
 		cancel_delayed_work_sync(&s->boost_rem);
 		if (sync_threshold) {
@@ -183,6 +233,17 @@ static int boost_mig_sync_thread(void *data)
 		}
 		/* Force policy re-evaluation to trigger adjust notifier. */
 		get_online_cpus();
+		if (cpu_online(src_cpu))
+			/*
+			 * Send an unchanged policy update to the source
+			 * CPU. Even though the policy isn't changed from
+			 * its existing boosted or non-boosted state
+			 * notifying the source CPU will let the governor
+			 * know a boost happened on another CPU and that it
+			 * should re-evaluate the frequency at the next timer
+			 * event without interference from a min sample time.
+			 */
+			cpufreq_update_policy(src_cpu);
 		if (cpu_online(dest_cpu)) {
 			cpufreq_update_policy(dest_cpu);
 			queue_delayed_work_on(dest_cpu, cpu_boost_wq,
@@ -203,6 +264,10 @@ static int boost_migration_notify(struct notifier_block *nb,
 	struct cpu_sync *s = &per_cpu(sync_info, dest_cpu);
 
 	if (!boost_ms)
+		return NOTIFY_OK;
+
+	/* Avoid deadlock in try_to_wake_up() */
+	if (s->thread == current)
 		return NOTIFY_OK;
 
 	pr_debug("Migration: CPU%d --> CPU%d\n", (int) arg, (int) dest_cpu);
@@ -259,7 +324,7 @@ static void cpuboost_input_event(struct input_handle *handle,
 {
 	u64 now;
 
-	if (!input_boost_freq)
+	if (!input_boost_freq || !input_boost_ms)
 		return;
 
 	now = ktime_to_us(ktime_get());
@@ -344,6 +409,61 @@ static struct input_handler cpuboost_input_handler = {
 	.id_table       = cpuboost_ids,
 };
 
+static int cpu_boost_enable(void)
+{
+	int ret;
+	int cpu;
+	struct cpu_sync *s;
+
+	if (enabled)
+		return ret;
+
+	pr_info("%s\n", __func__);
+	enabled = true;
+
+	for_each_possible_cpu(cpu) {
+		s = &per_cpu(sync_info, cpu);
+		s->thread = kthread_run(boost_mig_sync_thread, (void *)cpu,
+					"boost_sync/%d", cpu);
+		set_cpus_allowed(s->thread, *cpumask_of(cpu));
+	}
+
+	cpufreq_register_notifier(&boost_adjust_nb, CPUFREQ_POLICY_NOTIFIER);
+	atomic_notifier_chain_register(&migration_notifier_head,
+					&boost_migration_nb);
+
+	ret = input_register_handler(&cpuboost_input_handler);
+	if (ret)
+		pr_err("Cannot register cpuboost input handler.\n");
+
+	return ret;
+}
+
+static int cpu_boost_disable(void)
+{
+	int ret;
+	int cpu;
+	struct cpu_sync *s;
+
+	if (!enabled)
+		return ret;
+
+	pr_info("%s\n", __func__);
+	enabled = false;
+
+	for_each_possible_cpu(cpu) {
+		s = &per_cpu(sync_info, cpu);
+		kthread_stop(s->thread);
+	}
+
+	cpufreq_unregister_notifier(&boost_adjust_nb, CPUFREQ_POLICY_NOTIFIER);
+	atomic_notifier_chain_unregister(&migration_notifier_head,
+				&boost_migration_nb);
+	input_unregister_handler(&cpuboost_input_handler);
+
+	return ret;
+}
+
 static int cpu_boost_init(void)
 {
 	int cpu, ret;
@@ -363,15 +483,11 @@ static int cpu_boost_init(void)
 		spin_lock_init(&s->lock);
 		INIT_DELAYED_WORK(&s->boost_rem, do_boost_rem);
 		INIT_DELAYED_WORK(&s->input_boost_rem, do_input_boost_rem);
-		s->thread = kthread_run(boost_mig_sync_thread, (void *)cpu,
-					"boost_sync/%d", cpu);
-		set_cpus_allowed(s->thread, *cpumask_of(cpu));
 	}
-	cpufreq_register_notifier(&boost_adjust_nb, CPUFREQ_POLICY_NOTIFIER);
-	atomic_notifier_chain_register(&migration_notifier_head,
-					&boost_migration_nb);
-	ret = input_register_handler(&cpuboost_input_handler);
 
-	return 0;
+	if (boost_ms || input_boost_ms)
+		cpu_boost_enable();
+
+	return ret;
 }
 late_initcall(cpu_boost_init);
