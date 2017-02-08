@@ -81,6 +81,12 @@ GRTAGS
 GSYMS
 GTAGS
 
+#
+ATK
+ATK/*
+ATK/zImage-dtb
+arch/arm/mach-msm/smd_rpc_sym.c
+
 *.orig
 *~
 \#*#
