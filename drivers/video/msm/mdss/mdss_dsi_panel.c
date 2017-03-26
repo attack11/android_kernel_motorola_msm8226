@@ -26,6 +26,7 @@
 #include <linux/msm_mdp.h>
 #include <linux/jiffies.h>
 #include <linux/ktime.h>
+#include <linux/display_state.h>
 
 
 #include <linux/gpio.h>
@@ -63,6 +64,12 @@
 
 DEFINE_LED_TRIGGER(bl_led_trigger);
 
+bool display_on = true;
+
+bool is_display_on()
+{
+	return display_on;
+}
 
 static DECLARE_COMPLETION(bl_on_delay_completion);
 static enum hrtimer_restart mdss_dsi_panel_bl_on_defer_timer_expire(
@@ -784,6 +791,8 @@ static int mdss_dsi_panel_on(struct mdss_panel_data *pdata)
 		return -EINVAL;
 	}
 
+	display_on = true;
+
 	ctrl = container_of(pdata, struct mdss_dsi_ctrl_pdata,
 				panel_data);
 	mipi  = &pdata->panel_info.mipi;
@@ -936,6 +945,8 @@ disable_regs:
 		pdata->panel_info.cabc_mode = CABC_OFF_MODE;
 
 	pr_info("%s-:\n", __func__);
+
+	display_on = false;
 
 	return 0;
 }
